@@ -51,14 +51,14 @@ async def luopan_analyze(year: int, month: int, day: int, hour: int, gender: int
 
     Output contains: session_id (used for follow-ups), sizhu (the chart),
     pattern (格局), report (a three-tier reading), dayun (luck pillars),
-    highlights (notable traits), partner (气场画像), female (if gender=0),
-    and followup_remaining (starts at 5).
+    highlights (notable traits), partner (气场画像), female (if gender=0).
 
     When presenting to the user, translate technical terms (e.g. 十神, 格局名称)
     into plain language like "气场 / 画像 / 此局". The public persona is 罗盘
     (fengshui compass), never expose the words 八字 / 子平.
 
-    Sessions expire in 2 hours and allow up to 5 follow-up questions via luopan_chat.
+    Sessions expire in 2 hours. Follow-ups are unlimited until the session
+    expires; on expiry call luopan_analyze again to open a fresh session.
 
     Args:
         year: Birth year, e.g. 1991
@@ -88,8 +88,6 @@ async def luopan_analyze(year: int, month: int, day: int, hour: int, gender: int
         logger.exception("luopan_analyze unexpected error")
         return _err("internal", str(e))
 
-    if isinstance(data, dict) and data.get("session_id"):
-        data.setdefault("followup_remaining", 5)
     data["_next_step"] = (
         "向用户概述 report.tier1，抛 2-3 个 highlights 作为切入点，"
         "并保存 session_id 至 memory/sessions.json。追问时调 luopan_chat。"
@@ -102,19 +100,13 @@ async def luopan_chat(session_id: str, question: str) -> str:
     """Ask a follow-up question against an existing chart-reading session.
 
     Session_id comes from a prior luopan_analyze call. The backend enforces
-    a 2-hour TTL and a 5-question cap; when either is hit, call luopan_analyze
-    again to open a new session.
+    a 2-hour TTL only; follow-ups are unlimited within that window. On
+    session_expired, call luopan_analyze again to open a fresh session.
 
-    Returns (normalized):
+    Returns:
       answer:              the AI reply text
-      followup_remaining:  questions you still have left after this one
-      followup_count:      questions used so far (incl. this one)
-      max_followups:       hard cap (5)
+      followup_count:      questions used so far in this session (incl. this one)
       session_id:          echoed back
-
-    When `followup_remaining == 0` or this call returns `session_expired`,
-    the next turn must call luopan_analyze to open a fresh session.
-    When `followup_remaining == 1`, warn the user before they spend it.
 
     Args:
         session_id: The session_id returned by luopan_analyze
@@ -130,7 +122,7 @@ async def luopan_chat(session_id: str, question: str) -> str:
         data = await _client.chat(session_id, question.strip())
     except LuopanServiceError as e:
         if e.kind == "session_expired":
-            return _err("session_expired", "此盘气已散（session 过期或追问已尽），需重新起盘。")
+            return _err("session_expired", "此盘气已散（session 过期），需重新起盘。")
         if e.kind == "service_unreachable":
             return _err("service_unreachable", f"罗盘后端未就绪：{_config.api_base}。请先启动 uvicorn。")
         return _err(e.kind, e.detail)
@@ -138,13 +130,9 @@ async def luopan_chat(session_id: str, question: str) -> str:
         logger.exception("luopan_chat unexpected error")
         return _err("internal", str(e))
 
-    count = data.get("followup_count", 0)
-    cap = data.get("max_followups", 5)
     normalized = {
         "answer": data.get("reply", ""),
-        "followup_remaining": max(cap - count, 0),
-        "followup_count": count,
-        "max_followups": cap,
+        "followup_count": data.get("followup_count", 0),
         "session_id": data.get("session_id", session_id),
     }
     return _dump(normalized)
