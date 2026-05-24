@@ -38,6 +38,14 @@ class LuopanClient:
                 if r.status_code >= 500:
                     raise LuopanServiceError("backend_error", f"{r.status_code} {r.text[:200]}")
                 if r.status_code >= 400:
+                    # Try to parse FastAPI-style {"detail": {"error": "...", "hint": "..."}}
+                    try:
+                        body = r.json()
+                        det = body.get("detail")
+                        if isinstance(det, dict) and "error" in det:
+                            raise LuopanServiceError(det["error"], det.get("hint") or f"{r.status_code}")
+                    except (ValueError, KeyError, AttributeError):
+                        pass
                     raise LuopanServiceError("bad_request", f"{r.status_code} {r.text[:200]}")
                 return r.json()
             except httpx.ConnectError as e:
@@ -48,10 +56,22 @@ class LuopanClient:
                 continue
         raise LuopanServiceError("service_unreachable", str(last_err) if last_err else "connect failed")
 
-    async def analyze(self, year: int, month: int, day: int, hour: int, gender: int) -> dict[str, Any]:
+    async def analyze(
+        self,
+        year: int,
+        month: int,
+        day: int,
+        hour: int,
+        gender: int,
+        calendar: str = "solar",
+        is_leap_month: bool = False,
+    ) -> dict[str, Any]:
         return await self._post(
             "/api/analyze",
-            {"year": year, "month": month, "day": day, "hour": hour, "gender": gender},
+            {
+                "year": year, "month": month, "day": day, "hour": hour, "gender": gender,
+                "calendar": calendar, "is_leap_month": is_leap_month,
+            },
         )
 
     async def chat(self, session_id: str, question: str) -> dict[str, Any]:
